@@ -386,7 +386,11 @@ class CloudTransferApp(ctk.CTk):
             return
 
         src_sub = self.src_entry.get().strip().strip("/\\")
+        if src_sub.lower().startswith("http"):
+            src_sub = ""
         dst_sub = self.dst_entry.get().strip().strip("/\\")
+        if dst_sub.lower().startswith("http"):
+            dst_sub = "Backup_OneDrive"
 
         src_remote_path = f"{ONEDRIVE_REMOTE}:{src_sub}" if src_sub else f"{ONEDRIVE_REMOTE}:"
         dst_remote_path = f"{GDRIVE_REMOTE}:{dst_sub}" if dst_sub else f"{GDRIVE_REMOTE}:"
@@ -492,7 +496,11 @@ class CloudTransferApp(ctk.CTk):
             return
 
         src_sub = self.src_entry.get().strip().strip("/\\")
+        if src_sub.lower().startswith("http"):
+            src_sub = ""
         dst_sub = self.dst_entry.get().strip().strip("/\\")
+        if dst_sub.lower().startswith("http"):
+            dst_sub = "Backup_OneDrive"
         threading.Thread(target=self._do_trigger_github, args=(src_sub, dst_sub), daemon=True).start()
 
     def _do_trigger_github(self, src_sub, dst_sub):

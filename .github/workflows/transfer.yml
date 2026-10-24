@@ -49,6 +49,12 @@ jobs:
           DST_SUB="${{ inputs.gdrive_dst_path }}"
           TRANSFERS="${{ inputs.transfers }}"
 
+          # Nếu người dùng lỡ dán URL web (https://onedrive.live.com/...) thì tự động hiểu là thư mục gốc
+          if [[ "$SRC_SUB" == http* ]]; then
+            echo "⚠️ Phát hiện đường dẫn URL Web ($SRC_SUB), tự động chuyển về thư mục gốc OneDrive!"
+            SRC_SUB=""
+          fi
+
           if [ -z "$SRC_SUB" ]; then
             SRC="onedrive_src:"
           else
