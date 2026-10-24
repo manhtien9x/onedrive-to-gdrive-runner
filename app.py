@@ -164,19 +164,30 @@ class CloudTransferApp(ctk.CTk):
 
         btn_row = ctk.CTkFrame(ctrl_frame, fg_color="transparent")
         btn_row.grid(row=0, column=0, padx=16, pady=(12, 8), sticky="ew")
-        btn_row.grid_columnconfigure(0, weight=3)
-        btn_row.grid_columnconfigure(1, weight=1)
+        btn_row.grid_columnconfigure((0, 1), weight=2)
+        btn_row.grid_columnconfigure(2, weight=1)
 
         self.start_btn = ctk.CTkButton(
             btn_row,
-            text="▶ BẮT ĐẦU COPY DỮ LIỆU",
+            text="▶ CHẠY TRÊN MÁY NÀY",
             height=40,
-            font=ctk.CTkFont(size=15, weight="bold"),
+            font=ctk.CTkFont(size=14, weight="bold"),
             fg_color="#2563eb",
             hover_color="#1d4ed8",
             command=self.start_transfer
         )
-        self.start_btn.grid(row=0, column=0, padx=(0, 8), sticky="ew")
+        self.start_btn.grid(row=0, column=0, padx=(0, 6), sticky="ew")
+
+        self.gh_run_btn = ctk.CTkButton(
+            btn_row,
+            text="☁ CHẠY TRÊN MÁY ẢO GITHUB",
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#7c3aed",
+            hover_color="#6d28d9",
+            command=self.trigger_github_workflow
+        )
+        self.gh_run_btn.grid(row=0, column=1, padx=6, sticky="ew")
 
         self.stop_btn = ctk.CTkButton(
             btn_row,
@@ -188,7 +199,7 @@ class CloudTransferApp(ctk.CTk):
             state="disabled",
             command=self.stop_transfer
         )
-        self.stop_btn.grid(row=0, column=1, padx=(8, 0), sticky="ew")
+        self.stop_btn.grid(row=0, column=2, padx=(6, 0), sticky="ew")
 
         # Progress bar & Status
         prog_frame = ctk.CTkFrame(ctrl_frame, fg_color="transparent")
@@ -470,6 +481,87 @@ class CloudTransferApp(ctk.CTk):
                 self.transfer_process.terminate()
             except Exception:
                 pass
+
+    def trigger_github_workflow(self):
+        od_ok, gd_ok = self.refresh_remotes_status()
+        if not od_ok or not gd_ok:
+            messagebox.showerror(
+                "Chưa đăng nhập đủ tài khoản",
+                "Vui lòng đăng nhập cả OneDrive và Google Drive trước!"
+            )
+            return
+
+        src_sub = self.src_entry.get().strip().strip("/\\")
+        dst_sub = self.dst_entry.get().strip().strip("/\\")
+        threading.Thread(target=self._do_trigger_github, args=(src_sub, dst_sub), daemon=True).start()
+
+    def _do_trigger_github(self, src_sub, dst_sub):
+        import json
+        import base64
+        import webbrowser
+
+        repo = "manhtien9x/onedrive-to-gdrive-runner"
+        self.log(f"\n[*] Đang đồng bộ cấu hình và kích hoạt máy ảo GitHub ({repo})...")
+        self.set_status("Đang gửi lệnh lên máy ảo GitHub Actions...")
+
+        try:
+            out = subprocess.check_output(
+                ["git", "credential", "fill"],
+                input=b"protocol=https\nhost=github.com\n"
+            ).decode("utf-8", errors="replace")
+            token = [line.split("=", 1)[1] for line in out.splitlines() if line.startswith("password=")][0]
+            headers = {
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "CloudTransferApp"
+            }
+
+            # Cập nhật Secret RCLONE_CONFIG mới nhất nếu có pynacl
+            try:
+                from nacl import encoding, public
+                req_key = urllib.request.Request(f"https://api.github.com/repos/{repo}/actions/secrets/public-key", headers=headers)
+                key_data = json.loads(urllib.request.urlopen(req_key).read().decode())
+                pub_key = public.PublicKey(key_data["key"].encode("utf-8"), encoding.Base64Encoder())
+                sealed_box = public.SealedBox(pub_key)
+                secret_val = open(RCLONE_CONF, "r", encoding="utf-8").read()
+                encrypted = base64.b64encode(sealed_box.encrypt(secret_val.encode("utf-8"))).decode("utf-8")
+                req_put = urllib.request.Request(
+                    f"https://api.github.com/repos/{repo}/actions/secrets/RCLONE_CONFIG",
+                    data=json.dumps({"encrypted_value": encrypted, "key_id": key_data["key_id"]}).encode(),
+                    headers={**headers, "Content-Type": "application/json"},
+                    method="PUT"
+                )
+                urllib.request.urlopen(req_put)
+                self.log("[+] Đã tự động cập nhật Token đăng nhập mới nhất lên GitHub Secret.")
+            except Exception as se:
+                self.log(f"[*] Giữ nguyên Secret trên GitHub ({se})")
+
+            # Gọi API workflow_dispatch
+            dispatch_data = {
+                "ref": "main",
+                "inputs": {
+                    "onedrive_src_path": src_sub,
+                    "gdrive_dst_path": dst_sub,
+                    "transfers": "8"
+                }
+            }
+            req_dispatch = urllib.request.Request(
+                f"https://api.github.com/repos/{repo}/actions/workflows/transfer.yml/dispatches",
+                data=json.dumps(dispatch_data).encode(),
+                headers={**headers, "Content-Type": "application/json"},
+                method="POST"
+            )
+            urllib.request.urlopen(req_dispatch)
+
+            actions_url = f"https://github.com/{repo}/actions"
+            self.log(f"[✔] ĐÃ KÍCH HOẠT MÁY ẢO GITHUB THÀNH CÔNG!")
+            self.log(f"    👉 Xem tiến trình trực tiếp tại: {actions_url}")
+            self.set_status("Máy ảo GitHub đang chạy! Bạn có thể tắt máy tính.", 1.0)
+            webbrowser.open(actions_url)
+
+        except Exception as e:
+            self.log(f"[!] Lỗi khi kích hoạt máy ảo GitHub: {e}")
+            self.set_status("Lỗi kích hoạt GitHub Actions!")
 
 
 if __name__ == "__main__":
