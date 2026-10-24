@@ -14,15 +14,24 @@ on:
         default: 'Backup_OneDrive'
         type: string
       transfers:
-        description: 'Số luồng copy song song (Mặc định: 8)'
+        description: 'Số luồng copy song song (Mặc định: 10)'
         required: false
-        default: '8'
+        default: '10'
         type: string
+      run_attempt_chain:
+        description: 'Số thứ tự phiên chạy nối tiếp (Tự động tăng)'
+        required: false
+        default: '1'
+        type: string
+
+permissions:
+  contents: read
+  actions: write
 
 jobs:
   transfer-data:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # Tối đa gần 6 tiếng của GitHub Actions
+    timeout-minutes: 350 # Giới hạn an toàn của GitHub Actions (gần 6 tiếng)
 
     steps:
       - name: 1. Cài đặt Rclone mới nhất
@@ -43,16 +52,39 @@ jobs:
           echo "✔ Đã nạp các kết nối:"
           rclone listremotes
 
-      - name: 3. Bắt đầu Copy từ OneDrive sang Google Drive
+      - name: 3. Dọn dẹp file trùng lặp trên Google Drive (Dedupe)
+        continue-on-error: true
+        run: |
+          DST_SUB="${{ inputs.gdrive_dst_path }}"
+          if [[ "$DST_SUB" == http* ]]; then
+            DST_SUB="Backup_OneDrive"
+          fi
+          if [ -z "$DST_SUB" ]; then
+            DST="gdrive_dst:"
+          else
+            DST="gdrive_dst:${DST_SUB#/}"
+          fi
+
+          echo "🔍 Đang kiểm tra và gộp/xóa các thư mục hoặc file bị trùng tên trên Google Drive ($DST)..."
+          rclone dedupe "$DST" \
+            --dedupe-mode newest \
+            --by-hash \
+            -v || true
+
+      - name: 4. Copy dữ liệu (Tự động bỏ qua file đã tồn tại & hẹn giờ 5h20p)
+        id: transfer_step
         run: |
           SRC_SUB="${{ inputs.onedrive_src_path }}"
           DST_SUB="${{ inputs.gdrive_dst_path }}"
           TRANSFERS="${{ inputs.transfers }}"
+          CHAIN="${{ inputs.run_attempt_chain }}"
 
-          # Nếu người dùng lỡ dán URL web (https://onedrive.live.com/...) thì tự động hiểu là thư mục gốc
           if [[ "$SRC_SUB" == http* ]]; then
             echo "⚠️ Phát hiện đường dẫn URL Web ($SRC_SUB), tự động chuyển về thư mục gốc OneDrive!"
             SRC_SUB=""
+          fi
+          if [[ "$DST_SUB" == http* ]]; then
+            DST_SUB="Backup_OneDrive"
           fi
 
           if [ -z "$SRC_SUB" ]; then
@@ -68,17 +100,70 @@ jobs:
           fi
 
           echo "======================================================"
-          echo "🚀 BẮT ĐẦU CHUYỂN DỮ LIỆU TRÊN MÁY ẢO GITHUB"
+          echo "🚀 BẮT ĐẦU CHUYỂN DỮ LIỆU (PHIÊN NỐI TIẾP #$CHAIN)"
           echo "   • Nguồn (OneDrive)    : $SRC"
           echo "   • Đích (Google Drive) : $DST"
           echo "   • Luồng chạy song song: $TRANSFERS"
+          echo "   • Cơ chế chống trùng  : Bỏ qua file khớp dung lượng/thời gian (--size-only / modtime)"
           echo "======================================================"
 
+          set +e
+          # Chạy tối đa 5 tiếng 20 phút (320m). Nếu hết 320m chưa xong, rclone dừng mềm để bước 5 tự động gọi máy ảo mới
           rclone copy "$SRC" "$DST" \
             --transfers "$TRANSFERS" \
             --checkers 16 \
             --create-empty-src-dirs \
             --drive-chunk-size 64M \
-            --stats 10s \
+            --max-duration 320m \
+            --cutoff-mode soft \
+            --retries 5 \
+            --low-level-retries 10 \
+            --stats 15s \
             --stats-one-line \
             -v
+          RCLONE_EXIT=$?
+          echo "Rclone kết thúc với mã: $RCLONE_EXIT"
+
+          # Kiểm tra đối chiếu xem còn file nào trên OneDrive chưa có trên Google Drive không
+          echo "🔎 Đang kiểm tra đối chiếu dữ liệu còn thiếu giữa Nguồn và Đích..."
+          rclone check "$SRC" "$DST" --size-only --one-way --fast-list 2>&1 | tail -n 20
+          CHECK_EXIT=${PIPESTATUS[0]}
+
+          if [ "$RCLONE_EXIT" -eq 0 ] && [ "$CHECK_EXIT" -eq 0 ]; then
+            echo "🎉 ĐÃ COPY ĐẦY ĐỦ 100% DỮ LIỆU! Không còn file nào bị thiếu."
+            echo "need_rerun=false" >> $GITHUB_OUTPUT
+          else
+            echo "⏳ Vẫn còn dữ liệu chưa copy xong (hoặc đã chạm mốc 5h20p của phiên hiện tại)."
+            echo "🔄 Sẽ tự động kích hoạt máy ảo GitHub tiếp theo để chạy nối tiếp!"
+            echo "need_rerun=true" >> $GITHUB_OUTPUT
+          fi
+          set -e
+
+      - name: 5. Tự động kích hoạt máy ảo kế tiếp nếu chưa copy xong
+        if: always() && steps.transfer_step.outputs.need_rerun == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CHAIN="${{ inputs.run_attempt_chain }}"
+          NEXT_CHAIN=$((CHAIN + 1))
+
+          if [ "$NEXT_CHAIN" -gt 50 ]; then
+            echo "⚠️ Đã đạt giới hạn an toàn 50 phiên chạy liên tiếp. Dừng tự động gọi lại."
+            exit 0
+          fi
+
+          echo "🚀 Đang tự động gọi máy ảo GitHub mới (Phiên #$NEXT_CHAIN) để tiếp tục copy..."
+          curl -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/transfer.yml/dispatches" \
+            -d "{
+              \"ref\": \"main\",
+              \"inputs\": {
+                \"onedrive_src_path\": \"${{ inputs.onedrive_src_path }}\",
+                \"gdrive_dst_path\": \"${{ inputs.gdrive_dst_path }}\",
+                \"transfers\": \"${{ inputs.transfers }}\",
+                \"run_attempt_chain\": \"$NEXT_CHAIN\"
+              }
+            }"
+          echo "✔ Đã kích hoạt Phiên #$NEXT_CHAIN thành công!"
