@@ -1,0 +1,78 @@
+name: Copy OneDrive to Google Drive
+
+on:
+  workflow_dispatch:
+    inputs:
+      onedrive_src_path:
+        description: 'Thư mục gốc OneDrive (Để trống = Copy TOÀN BỘ OneDrive, VD: Documents/Work)'
+        required: false
+        default: ''
+        type: string
+      gdrive_dst_path:
+        description: 'Thư mục đích trên Google Drive (VD: Backup_OneDrive)'
+        required: false
+        default: 'Backup_OneDrive'
+        type: string
+      transfers:
+        description: 'Số luồng copy song song (Mặc định: 8)'
+        required: false
+        default: '8'
+        type: string
+
+jobs:
+  transfer-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # Tối đa gần 6 tiếng của GitHub Actions
+
+    steps:
+      - name: 1. Cài đặt Rclone mới nhất
+        run: |
+          sudo -v ; curl https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: 2. Nạp cấu hình đăng nhập (Từ GitHub Secret RCLONE_CONFIG)
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          if [ -z "$RCLONE_CONFIG_CONTENT" ]; then
+            echo "❌ LỖI: Bạn chưa thêm Secret 'RCLONE_CONFIG' trong Settings -> Secrets and variables -> Actions!"
+            exit 1
+          fi
+          mkdir -p ~/.config/rclone
+          echo "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
+          echo "✔ Đã nạp các kết nối:"
+          rclone listremotes
+
+      - name: 3. Bắt đầu Copy từ OneDrive sang Google Drive
+        run: |
+          SRC_SUB="${{ inputs.onedrive_src_path }}"
+          DST_SUB="${{ inputs.gdrive_dst_path }}"
+          TRANSFERS="${{ inputs.transfers }}"
+
+          if [ -z "$SRC_SUB" ]; then
+            SRC="onedrive_src:"
+          else
+            SRC="onedrive_src:${SRC_SUB#/}"
+          fi
+
+          if [ -z "$DST_SUB" ]; then
+            DST="gdrive_dst:"
+          else
+            DST="gdrive_dst:${DST_SUB#/}"
+          fi
+
+          echo "======================================================"
+          echo "🚀 BẮT ĐẦU CHUYỂN DỮ LIỆU TRÊN MÁY ẢO GITHUB"
+          echo "   • Nguồn (OneDrive)    : $SRC"
+          echo "   • Đích (Google Drive) : $DST"
+          echo "   • Luồng chạy song song: $TRANSFERS"
+          echo "======================================================"
+
+          rclone copy "$SRC" "$DST" \
+            --transfers "$TRANSFERS" \
+            --checkers 16 \
+            --create-empty-src-dirs \
+            --drive-chunk-size 64M \
+            --stats 10s \
+            --stats-one-line \
+            -v
