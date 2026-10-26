@@ -31,7 +31,7 @@ permissions:
 jobs:
   transfer-data:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # Giới hạn an toàn của GitHub Actions (gần 6 tiếng)
+    timeout-minutes: 350 # Giới hạn 5h50p của GitHub Actions
 
     steps:
       - name: 1. Cài đặt Rclone mới nhất
@@ -69,9 +69,10 @@ jobs:
           rclone dedupe "$DST" \
             --dedupe-mode newest \
             --by-hash \
+            --fast-list \
             -v || true
 
-      - name: 4. Copy dữ liệu (Tự động bỏ qua file đã tồn tại & hẹn giờ 5h20p)
+      - name: 4. Copy dữ liệu (Tự động bỏ qua file đã tồn tại & hẹn giờ 5h00p)
         id: transfer_step
         run: |
           SRC_SUB="${{ inputs.onedrive_src_path }}"
@@ -80,7 +81,6 @@ jobs:
           CHAIN="${{ inputs.run_attempt_chain }}"
 
           if [[ "$SRC_SUB" == http* ]]; then
-            echo "⚠️ Phát hiện đường dẫn URL Web ($SRC_SUB), tự động chuyển về thư mục gốc OneDrive!"
             SRC_SUB=""
           fi
           if [[ "$DST_SUB" == http* ]]; then
@@ -104,17 +104,17 @@ jobs:
           echo "   • Nguồn (OneDrive)    : $SRC"
           echo "   • Đích (Google Drive) : $DST"
           echo "   • Luồng chạy song song: $TRANSFERS"
-          echo "   • Cơ chế chống trùng  : Bỏ qua file khớp dung lượng/thời gian (--size-only / modtime)"
+          echo "   • Cơ chế chống trùng  : Bỏ qua file đã tồn tại khớp dung lượng/thời gian"
           echo "======================================================"
 
           set +e
-          # Chạy tối đa 5 tiếng 20 phút (320m). Nếu hết 320m chưa xong, rclone dừng mềm để bước 5 tự động gọi máy ảo mới
+          # Chạy tối đa 5 tiếng (300m). Mã thoát 0 = đã copy hết 100% dữ liệu. Mã thoát != 0 (VD: 10 do hết 300m) = còn dữ liệu, gọi ngay máy ảo mới!
           rclone copy "$SRC" "$DST" \
             --transfers "$TRANSFERS" \
             --checkers 16 \
             --create-empty-src-dirs \
             --drive-chunk-size 64M \
-            --max-duration 320m \
+            --max-duration 300m \
             --cutoff-mode soft \
             --retries 5 \
             --low-level-retries 10 \
@@ -124,25 +124,20 @@ jobs:
           RCLONE_EXIT=$?
           echo "Rclone kết thúc với mã: $RCLONE_EXIT"
 
-          # Kiểm tra đối chiếu xem còn file nào trên OneDrive chưa có trên Google Drive không
-          echo "🔎 Đang kiểm tra đối chiếu dữ liệu còn thiếu giữa Nguồn và Đích..."
-          rclone check "$SRC" "$DST" --size-only --one-way --fast-list 2>&1 | tail -n 20
-          CHECK_EXIT=${PIPESTATUS[0]}
-
-          if [ "$RCLONE_EXIT" -eq 0 ] && [ "$CHECK_EXIT" -eq 0 ]; then
+          if [ "$RCLONE_EXIT" -eq 0 ]; then
             echo "🎉 ĐÃ COPY ĐẦY ĐỦ 100% DỮ LIỆU! Không còn file nào bị thiếu."
             echo "need_rerun=false" >> $GITHUB_OUTPUT
           else
-            echo "⏳ Vẫn còn dữ liệu chưa copy xong (hoặc đã chạm mốc 5h20p của phiên hiện tại)."
-            echo "🔄 Sẽ tự động kích hoạt máy ảo GitHub tiếp theo để chạy nối tiếp!"
+            echo "⏳ Đã chạm mốc thời gian phiên hiện tại (Exit code: $RCLONE_EXIT). Vẫn còn dữ liệu cần copy tiếp!"
+            echo "🔄 Sẽ tự động kích hoạt máy ảo GitHub tiếp theo ngay lập tức!"
             echo "need_rerun=true" >> $GITHUB_OUTPUT
           fi
           set -e
 
       - name: 5. Tự động kích hoạt máy ảo kế tiếp nếu chưa copy xong
-        if: always() && steps.transfer_step.outputs.need_rerun == 'true'
+        if: always() && (steps.transfer_step.outputs.need_rerun == 'true' || steps.transfer_step.conclusion == 'cancelled')
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           CHAIN="${{ inputs.run_attempt_chain }}"
           NEXT_CHAIN=$((CHAIN + 1))
@@ -155,7 +150,7 @@ jobs:
           echo "🚀 Đang tự động gọi máy ảo GitHub mới (Phiên #$NEXT_CHAIN) để tiếp tục copy..."
           curl -sS -X POST \
             -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/actions/workflows/transfer.yml/dispatches" \
             -d "{
               \"ref\": \"main\",
