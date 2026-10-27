@@ -1,6 +1,9 @@
 name: Copy OneDrive to Google Drive
 
 on:
+  schedule:
+    # Tu dong chay vao luc 00:30 UTC ngay 01/11 (07:30 sang gio Viet Nam)
+    - cron: '30 0 1 11 *'
   workflow_dispatch:
     inputs:
       onedrive_src_path:
