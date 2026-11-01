@@ -2,7 +2,7 @@ name: Copy OneDrive to Google Drive
 
 on:
   schedule:
-    # Tu dong chay vao luc 00:30 UTC ngay 01/11 (07:30 sang gio Viet Nam)
+    # Tu dong chay dinh ky neu can
     - cron: '30 0 1 11 *'
   workflow_dispatch:
     inputs:
@@ -12,7 +12,7 @@ on:
         default: ''
         type: string
       gdrive_dst_path:
-        description: 'Thư mục đích trên Google Drive (VD: Backup_OneDrive)'
+        description: 'Thư mục đích trên Google Drive (Mặc định: Backup_OneDrive)'
         required: false
         default: 'Backup_OneDrive'
         type: string
@@ -59,14 +59,10 @@ jobs:
         continue-on-error: true
         run: |
           DST_SUB="${{ inputs.gdrive_dst_path }}"
-          if [[ "$DST_SUB" == http* ]]; then
+          if [ -z "$DST_SUB" ] || [[ "$DST_SUB" == http* ]]; then
             DST_SUB="Backup_OneDrive"
           fi
-          if [ -z "$DST_SUB" ]; then
-            DST="gdrive_dst:"
-          else
-            DST="gdrive_dst:${DST_SUB#/}"
-          fi
+          DST="gdrive_dst:${DST_SUB#/}"
 
           echo "🔍 Đang kiểm tra và gộp/xóa các thư mục hoặc file bị trùng tên trên Google Drive ($DST)..."
           rclone dedupe "$DST" \
@@ -86,8 +82,14 @@ jobs:
           if [[ "$SRC_SUB" == http* ]]; then
             SRC_SUB=""
           fi
-          if [[ "$DST_SUB" == http* ]]; then
+          if [ -z "$DST_SUB" ] || [[ "$DST_SUB" == http* ]]; then
             DST_SUB="Backup_OneDrive"
+          fi
+          if [ -z "$TRANSFERS" ]; then
+            TRANSFERS="10"
+          fi
+          if [ -z "$CHAIN" ]; then
+            CHAIN="1"
           fi
 
           if [ -z "$SRC_SUB" ]; then
@@ -95,12 +97,7 @@ jobs:
           else
             SRC="onedrive_src:${SRC_SUB#/}"
           fi
-
-          if [ -z "$DST_SUB" ]; then
-            DST="gdrive_dst:"
-          else
-            DST="gdrive_dst:${DST_SUB#/}"
-          fi
+          DST="gdrive_dst:${DST_SUB#/}"
 
           echo "======================================================"
           echo "🚀 BẮT ĐẦU CHUYỂN DỮ LIỆU (PHIÊN NỐI TIẾP #$CHAIN)"
@@ -143,11 +140,27 @@ jobs:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           CHAIN="${{ inputs.run_attempt_chain }}"
+          if [ -z "$CHAIN" ]; then
+            CHAIN="1"
+          fi
           NEXT_CHAIN=$((CHAIN + 1))
 
           if [ "$NEXT_CHAIN" -gt 50 ]; then
             echo "⚠️ Đã đạt giới hạn an toàn 50 phiên chạy liên tiếp. Dừng tự động gọi lại."
             exit 0
+          fi
+
+          SRC_VAL="${{ inputs.onedrive_src_path }}"
+          if [[ "$SRC_VAL" == http* ]]; then
+            SRC_VAL=""
+          fi
+          DST_VAL="${{ inputs.gdrive_dst_path }}"
+          if [ -z "$DST_VAL" ] || [[ "$DST_VAL" == http* ]]; then
+            DST_VAL="Backup_OneDrive"
+          fi
+          TRANSFERS_VAL="${{ inputs.transfers }}"
+          if [ -z "$TRANSFERS_VAL" ]; then
+            TRANSFERS_VAL="10"
           fi
 
           echo "🚀 Đang tự động gọi máy ảo GitHub mới (Phiên #$NEXT_CHAIN) để tiếp tục copy..."
@@ -158,9 +171,9 @@ jobs:
             -d "{
               \"ref\": \"main\",
               \"inputs\": {
-                \"onedrive_src_path\": \"${{ inputs.onedrive_src_path }}\",
-                \"gdrive_dst_path\": \"${{ inputs.gdrive_dst_path }}\",
-                \"transfers\": \"${{ inputs.transfers }}\",
+                \"onedrive_src_path\": \"$SRC_VAL\",
+                \"gdrive_dst_path\": \"$DST_VAL\",
+                \"transfers\": \"$TRANSFERS_VAL\",
                 \"run_attempt_chain\": \"$NEXT_CHAIN\"
               }
             }"
