@@ -55,23 +55,7 @@ jobs:
           echo "✔ Đã nạp các kết nối:"
           rclone listremotes
 
-      - name: 3. Dọn dẹp file trùng lặp trên Google Drive (Dedupe)
-        continue-on-error: true
-        run: |
-          DST_SUB="${{ inputs.gdrive_dst_path }}"
-          if [ -z "$DST_SUB" ] || [[ "$DST_SUB" == http* ]]; then
-            DST_SUB="Backup_OneDrive"
-          fi
-          DST="gdrive_dst:${DST_SUB#/}"
-
-          echo "🔍 Đang kiểm tra và gộp/xóa các thư mục hoặc file bị trùng tên trên Google Drive ($DST)..."
-          rclone dedupe "$DST" \
-            --dedupe-mode newest \
-            --by-hash \
-            --fast-list \
-            -v || true
-
-      - name: 4. Copy dữ liệu (Tự động bỏ qua file đã tồn tại & hẹn giờ 5h00p)
+      - name: 3. Copy dữ liệu (Tự động bỏ qua file đã tồn tại & chạy tối đa 320m)
         id: transfer_step
         run: |
           SRC_SUB="${{ inputs.onedrive_src_path }}"
@@ -108,13 +92,13 @@ jobs:
           echo "======================================================"
 
           set +e
-          # Chạy tối đa 5 tiếng (300m). Mã thoát 0 = đã copy hết 100% dữ liệu. Mã thoát != 0 (VD: 10 do hết 300m) = còn dữ liệu, gọi ngay máy ảo mới!
+          # Chạy tối đa 5 tiếng 20 phút (320m). Mã thoát 0 = đã copy hết 100% dữ liệu. Mã thoát != 0 (VD: 10 do het gio) = con du lieu, goi may ao moi!
           rclone copy "$SRC" "$DST" \
             --transfers "$TRANSFERS" \
             --checkers 16 \
             --create-empty-src-dirs \
             --drive-chunk-size 64M \
-            --max-duration 300m \
+            --max-duration 320m \
             --cutoff-mode soft \
             --retries 5 \
             --low-level-retries 10 \
@@ -134,7 +118,7 @@ jobs:
           fi
           set -e
 
-      - name: 5. Tự động kích hoạt máy ảo kế tiếp nếu chưa copy xong
+      - name: 4. Tự động kích hoạt máy ảo kế tiếp nếu chưa copy xong
         if: always() && (steps.transfer_step.outputs.need_rerun == 'true' || steps.transfer_step.conclusion == 'cancelled')
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
