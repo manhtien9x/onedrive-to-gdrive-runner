@@ -92,16 +92,18 @@ jobs:
           echo "======================================================"
 
           set +e
-          # Chạy tối đa 5 tiếng 20 phút (320m). Mã thoát 0 = đã copy hết 100% dữ liệu. Mã thoát != 0 (VD: 10 do het gio) = con du lieu, goi may ao moi!
+          # Chạy tối đa 5 tiếng 20 phút (320m). Loại trừ Personal Vault (Két sắt bảo mật 2FA của OneDrive) để tránh treo retry
           rclone copy "$SRC" "$DST" \
+            --exclude "/Personal Vault/**" \
+            --exclude "Personal Vault" \
             --transfers "$TRANSFERS" \
             --checkers 16 \
             --create-empty-src-dirs \
             --drive-chunk-size 64M \
             --max-duration 320m \
             --cutoff-mode soft \
-            --retries 5 \
-            --low-level-retries 10 \
+            --retries 2 \
+            --low-level-retries 5 \
             --stats 15s \
             --stats-one-line \
             -v
